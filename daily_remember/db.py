@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     next_run_at TEXT,
     last_run_at TEXT,
     send_now    INTEGER NOT NULL DEFAULT 0,
+    test_to     TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -38,6 +39,10 @@ CREATE TABLE IF NOT EXISTS send_log (
     sent_at     TEXT NOT NULL,
     status      TEXT NOT NULL,
     detail      TEXT
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS discord_cache (
     kind  TEXT NOT NULL,
@@ -56,6 +61,7 @@ FIELDS = ("name", "channel_id", "title", "content", "mentions", "links", "schedu
 MIGRATIONS = {
     "delivery": "ALTER TABLE reminders ADD COLUMN delivery TEXT NOT NULL DEFAULT 'channel'",
     "recipients": "ALTER TABLE reminders ADD COLUMN recipients TEXT NOT NULL DEFAULT '[]'",
+    "test_to": "ALTER TABLE reminders ADD COLUMN test_to TEXT",
 }
 
 Reminder = Dict[str, Any]
@@ -165,10 +171,15 @@ def request_send_now(reminder_id: int) -> None:
         conn.execute("UPDATE reminders SET send_now = 1 WHERE id = ?", (reminder_id,))
 
 
+def request_test(reminder_id: int, user_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE reminders SET test_to = ? WHERE id = ?", (user_id, reminder_id))
+
+
 def due_reminders(now: datetime) -> List[Reminder]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM reminders WHERE send_now = 1 "
+            "SELECT * FROM reminders WHERE send_now = 1 OR test_to IS NOT NULL "
             "OR (active = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?) ORDER BY id",
             (to_iso(now),),
         ).fetchall()
@@ -183,7 +194,7 @@ def finish_dispatch(reminder: Reminder, sent_at: Optional[datetime], advance: bo
     sobrescrever uma edição feita pela CLI no meio do caminho.
     """
     with connect() as conn:
-        conn.execute("UPDATE reminders SET send_now = 0 WHERE id = ?", (reminder["id"],))
+        conn.execute("UPDATE reminders SET send_now = 0, test_to = NULL WHERE id = ?", (reminder["id"],))
         if sent_at:
             conn.execute("UPDATE reminders SET last_run_at = ? WHERE id = ?",
                          (to_iso(sent_at), reminder["id"]))
@@ -214,6 +225,19 @@ def history(reminder_id: Optional[int] = None, limit: int = 20) -> List[Dict[str
     with connect() as conn:
         rows = conn.execute(query, (*params, limit)).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- Configurações ---------------------------------------------------------
+
+def get_setting(key: str) -> Optional[str]:
+    with connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_setting(key: str, value: str) -> None:
+    with connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
 
 
 # --- Cache de canais/cargos/membros (preenchido pelo bot, usado pela CLI) ---
