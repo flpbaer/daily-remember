@@ -314,9 +314,8 @@ def cmd_add(_args: argparse.Namespace) -> None:
     next_at = schedule.next_run(data["schedule"])
     reminder_id = db.create_reminder(data, next_at)
     console.print(f"[green]✔ Lembrete #{reminder_id} criado.[/] Próximo envio: {fmt_dt(db.to_iso(next_at))}")
-    if questionary.confirm("Enviar um teste agora para conferir como ficou?", default=False).unsafe_ask():
-        db.request_send_now(reminder_id)
-        console.print(f"Teste agendado; o bot envia em até {POLL_SECONDS}s.")
+    if questionary.confirm("Mandar um teste só para você, no privado?", default=True).unsafe_ask():
+        request_test(reminder_id)
 
 
 def cmd_list(_args: argparse.Namespace) -> None:
@@ -390,6 +389,45 @@ def cmd_send(args: argparse.Namespace) -> None:
                       "(sem alterar a agenda). O bot precisa estar rodando.")
 
 
+def my_user_id(change: bool = False) -> str:
+    """Seu ID no Discord, perguntado uma vez e salvo no banco (para os testes)."""
+    current = db.get_setting("my_user_id")
+    if current and not change:
+        return current
+    members = db.list_cache("member")
+    user_id = MANUAL
+    if members:
+        choices = [Choice(f"{m['name']}  ({m['guild']})", value=m["id"]) for m in members]
+        choices.append(Choice("Digitar ID manualmente", value=MANUAL))
+        user_id = questionary.select("Quem é você no Discord?", choices=choices,
+                                     default=current if any(m["id"] == current for m in members) else None,
+                                     ).unsafe_ask()
+    if user_id == MANUAL:
+        user_id = questionary.text(
+            "Seu ID de usuário no Discord (clique no seu nome > Copiar ID):", default=current or "",
+            validate=lambda v: v.strip().isdigit() or "Informe apenas números",
+        ).unsafe_ask().strip()
+    db.set_setting("my_user_id", user_id)
+    return user_id
+
+
+def request_test(reminder_id: int) -> None:
+    db.request_test(reminder_id, my_user_id())
+    console.print(f"🧪 O bot vai mandar o teste no seu privado em até {POLL_SECONDS}s "
+                  "(ninguém mais recebe, e a agenda não muda).")
+
+
+def cmd_test(args: argparse.Namespace) -> None:
+    reminder = pick_reminder(args.id, "testar")
+    if reminder:
+        request_test(reminder["id"])
+
+
+def cmd_me(_args: argparse.Namespace) -> None:
+    user_id = my_user_id(change=True)
+    console.print(f"[green]✔ Testes serão enviados para o usuário {user_id}.[/]")
+
+
 def cmd_history(args: argparse.Namespace) -> None:
     rows = db.history(args.id, args.n)
     if not rows:
@@ -398,7 +436,7 @@ def cmd_history(args: argparse.Namespace) -> None:
     table = Table(title="Histórico de envios")
     for col in ("Quando", "Lembrete", "Status", "Detalhe"):
         table.add_column(col)
-    colors = {"enviado": "green", "parcial": "yellow", "erro": "red", "pulado": "yellow"}
+    colors = {"teste": "cyan", "enviado": "green", "parcial": "yellow", "erro": "red", "pulado": "yellow"}
     for row in rows:
         color = colors.get(row["status"], "white")
         table.add_row(fmt_dt(row["sent_at"]), f"#{row['reminder_id']} {row['name'] or '(excluído)'}",
@@ -418,9 +456,11 @@ MENU = [
     ("Ver detalhes / pré-visualizar", "show"),
     ("Pausar lembrete", "pause"),
     ("Retomar lembrete", "resume"),
-    ("Enviar agora (teste)", "send"),
+    ("Testar (mandar só pra mim)", "test"),
+    ("Enviar agora para todos", "send"),
     ("Excluir lembrete", "delete"),
     ("Histórico de envios", "history"),
+    ("Trocar meu usuário (para testes)", "me"),
 ]
 
 
@@ -441,7 +481,8 @@ def interactive_menu() -> None:
 
 COMMANDS = {
     "add": cmd_add, "list": cmd_list, "show": cmd_show, "edit": cmd_edit, "pause": cmd_pause,
-    "resume": cmd_resume, "delete": cmd_delete, "send": cmd_send, "history": cmd_history, "bot": cmd_bot,
+    "resume": cmd_resume, "delete": cmd_delete, "send": cmd_send, "test": cmd_test, "me": cmd_me,
+    "history": cmd_history, "bot": cmd_bot,
 }
 
 
@@ -454,9 +495,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     sub.add_parser("list", help="lista os lembretes")
     for name, help_text in (("show", "mostra/pré-visualiza um lembrete"), ("edit", "edita um lembrete"),
                             ("pause", "pausa um lembrete"), ("resume", "reativa um lembrete"),
-                            ("delete", "exclui um lembrete"), ("send", "envia agora, sem mexer na agenda")):
+                            ("delete", "exclui um lembrete"), ("send", "envia agora para todos, sem mexer na agenda"),
+                            ("test", "manda só no seu privado, para testar")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("id", type=int, nargs="?", help="ID do lembrete (se omitido, pergunta)")
+    sub.add_parser("me", help="define/troca seu usuário do Discord (destino dos testes)")
     h = sub.add_parser("history", help="histórico de envios")
     h.add_argument("id", type=int, nargs="?")
     h.add_argument("-n", type=int, default=20, help="quantidade de registros")
