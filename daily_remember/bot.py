@@ -57,6 +57,9 @@ class ReminderBot(discord.Client):
         is_due = bool(reminder["active"] and scheduled_at and scheduled_at <= now)
         too_late = is_due and now - scheduled_at > grace
 
+        if reminder["test_to"]:
+            await self.send_test(reminder, int(reminder["test_to"]))
+
         sent_at = None
         if reminder["send_now"] or (is_due and not too_late):
             if await self.send_reminder(reminder):
@@ -103,6 +106,21 @@ class ReminderBot(discord.Client):
                 "Lembrete #%s (%s): %s — %s", reminder["id"], reminder["name"], status, detail)
         db.log_send(reminder["id"], status, detail)
         return ok > 0
+
+    async def send_test(self, reminder: Dict[str, Any], user_id: int) -> None:
+        """Manda o lembrete só no privado de quem pediu o teste, sem mencionar ninguém."""
+        try:
+            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            message = self.build_message(reminder, name=user.display_name, mentions=False)
+            note = f"🧪 Teste do lembrete #{reminder['id']} ({reminder['name']})"
+            message["content"] = f"{note}\n\n{message['content']}" if message.get("content") else note
+            await user.send(**message)
+        except Exception as exc:
+            log.error("Falha no teste do lembrete #%s: %s", reminder["id"], exc)
+            db.log_send(reminder["id"], "erro", f"teste: {exc}")
+            return
+        log.info("Teste do lembrete #%s enviado para %s", reminder["id"], user)
+        db.log_send(reminder["id"], "teste", f"enviado só para {user.display_name}")
 
     def resolve_recipients(self, recipients: List[Dict[str, Any]]) -> Dict[int, str]:
         """Expande cargos nos seus membros e remove duplicados. Retorna {user_id: nome}."""
