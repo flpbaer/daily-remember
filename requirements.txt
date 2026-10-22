@@ -1,0 +1,5 @@
+discord.py>=2.3,<3
+croniter>=2.0
+questionary>=2.0
+rich>=13
+python-dotenv>=1.0

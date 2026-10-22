@@ -1,0 +1,189 @@
+"""Processo do bot: fica rodando e envia os lembretes na hora certa.
+
+Não guarda agendamentos em memória: a cada POLL_SECONDS consulta o banco, então
+qualquer mudança feita pela CLI vale no próximo ciclo, sem reiniciar.
+"""
+from __future__ import annotations
+
+import logging
+import sys
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List
+
+import discord
+from discord.ext import tasks
+
+from . import db, schedule
+from .config import GRACE_MINUTES, MEMBERS_INTENT, POLL_SECONDS, TOKEN, TZ
+from .message import apply_variables, mention_tokens
+
+log = logging.getLogger("daily_remember")
+
+
+class LinksView(discord.ui.View):
+    def __init__(self, links: List[Dict[str, str]]):
+        super().__init__(timeout=None)
+        for link in links[:25]:
+            self.add_item(discord.ui.Button(label=link["label"][:80], url=link["url"]))
+
+
+class ReminderBot(discord.Client):
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        intents.members = MEMBERS_INTENT
+        super().__init__(intents=intents)
+
+    async def setup_hook(self) -> None:
+        self.dispatch_loop.start()
+        self.sync_cache_loop.start()
+
+    async def on_ready(self) -> None:
+        log.info("Conectado como %s em %d servidor(es)", self.user, len(self.guilds))
+
+    # --- Envio -------------------------------------------------------------
+
+    @tasks.loop(seconds=POLL_SECONDS)
+    async def dispatch_loop(self) -> None:
+        now = datetime.now(timezone.utc)
+        grace = timedelta(minutes=GRACE_MINUTES)
+        for reminder in db.due_reminders(now):
+            try:
+                await self._dispatch(reminder, now, grace)
+            except Exception:
+                log.exception("Erro processando lembrete #%s", reminder["id"])
+
+    async def _dispatch(self, reminder: Dict[str, Any], now: datetime, grace: timedelta) -> None:
+        scheduled_at = db.from_iso(reminder["next_run_at"])
+        is_due = bool(reminder["active"] and scheduled_at and scheduled_at <= now)
+        too_late = is_due and now - scheduled_at > grace
+
+        sent_at = None
+        if reminder["send_now"] or (is_due and not too_late):
+            if await self.send_reminder(reminder):
+                sent_at = now
+        elif too_late:
+            log.warning("Lembrete #%s pulado: horário %s passou há mais de %d min (bot estava fora?)",
+                        reminder["id"], scheduled_at.astimezone(TZ), GRACE_MINUTES)
+            db.log_send(reminder["id"], "pulado", f"atrasado desde {db.to_iso(scheduled_at)}")
+
+        next_at = schedule.next_run(reminder["schedule"], now) if is_due else None
+        db.finish_dispatch(reminder, sent_at, advance=is_due, next_run=next_at)
+
+    async def send_reminder(self, reminder: Dict[str, Any]) -> bool:
+        """Envia para o canal e/ou no privado. Retorna True se ao menos um envio deu certo."""
+        delivery = reminder.get("delivery", "channel")
+        ok, failures = 0, []
+
+        if delivery in ("channel", "both"):
+            try:
+                channel_id = int(reminder["channel_id"])
+                channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+                await channel.send(**self.build_message(reminder))
+                ok += 1
+            except Exception as exc:
+                failures.append(f"canal ({exc})")
+
+        if delivery in ("dm", "both"):
+            for user_id, name in self.resolve_recipients(reminder["recipients"]).items():
+                try:
+                    user = self.get_user(user_id) or await self.fetch_user(user_id)
+                    await user.send(**self.build_message(reminder, name=name, mentions=False))
+                    ok += 1
+                except discord.Forbidden:
+                    failures.append(f"{name} (DM fechada)")
+                except Exception as exc:
+                    failures.append(f"{name} ({exc})")
+
+        total = ok + len(failures)
+        status = "enviado" if not failures else ("parcial" if ok else "erro")
+        detail = f"{ok}/{total} ok" + (f"; falhou: {', '.join(failures)}" if failures else "")
+        if total == 0:
+            status, detail = "erro", "nenhum destinatário encontrado"
+        log.log(logging.INFO if status == "enviado" else logging.WARNING,
+                "Lembrete #%s (%s): %s — %s", reminder["id"], reminder["name"], status, detail)
+        db.log_send(reminder["id"], status, detail)
+        return ok > 0
+
+    def resolve_recipients(self, recipients: List[Dict[str, Any]]) -> Dict[int, str]:
+        """Expande cargos nos seus membros e remove duplicados. Retorna {user_id: nome}."""
+        resolved: Dict[int, str] = {}
+        for r in recipients:
+            if r["type"] == "user":
+                member = next((g.get_member(int(r["id"])) for g in self.guilds
+                               if g.get_member(int(r["id"]))), None)
+                resolved[int(r["id"])] = member.display_name if member else r.get("name", r["id"])
+            elif r["type"] == "role":
+                for guild in self.guilds:
+                    role = guild.get_role(int(r["id"]))
+                    if role:
+                        for member in role.members:
+                            if not member.bot:
+                                resolved[member.id] = member.display_name
+        return resolved
+
+    @staticmethod
+    def build_message(reminder: Dict[str, Any], name: str = "pessoal",
+                      mentions: bool = True) -> Dict[str, Any]:
+        now = datetime.now(TZ)
+        text = apply_variables(reminder["content"], now, name)
+        mention_str = mention_tokens(reminder["mentions"]) if mentions else ""
+        kwargs: Dict[str, Any] = {
+            "allowed_mentions": discord.AllowedMentions(everyone=True, roles=True, users=True),
+        }
+        if reminder.get("title"):
+            kwargs["embed"] = discord.Embed(
+                title=apply_variables(reminder["title"], now, name),
+                description=text,
+                color=discord.Color.blurple(),
+            )
+            if mention_str:
+                kwargs["content"] = mention_str
+        else:
+            kwargs["content"] = f"{mention_str}\n{text}".strip()
+        if reminder["links"]:
+            kwargs["view"] = LinksView(reminder["links"])
+        return kwargs
+
+    @dispatch_loop.before_loop
+    async def _before_dispatch(self) -> None:
+        await self.wait_until_ready()
+
+    # --- Cache para a CLI --------------------------------------------------
+
+    @tasks.loop(minutes=10)
+    async def sync_cache_loop(self) -> None:
+        """Salva canais, cargos e membros no banco para a CLI oferecer como opções."""
+        channels, roles, members = [], [], []
+        for guild in self.guilds:
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).send_messages:
+                    channels.append({"id": str(ch.id), "name": ch.name, "guild": guild.name})
+            for role in guild.roles:
+                if not role.is_default() and not role.managed:
+                    roles.append({"id": str(role.id), "name": role.name, "guild": guild.name})
+            if MEMBERS_INTENT:
+                for member in guild.members:
+                    if not member.bot:
+                        members.append({"id": str(member.id), "name": member.display_name,
+                                        "guild": guild.name})
+        db.replace_cache("channel", channels)
+        db.replace_cache("role", roles)
+        if MEMBERS_INTENT:
+            db.replace_cache("member", members)
+        log.info("Cache atualizado: %d canais, %d cargos, %d membros",
+                 len(channels), len(roles), len(members))
+
+    @sync_cache_loop.before_loop
+    async def _before_sync(self) -> None:
+        await self.wait_until_ready()
+
+
+def run() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    if not TOKEN:
+        sys.exit("DISCORD_TOKEN não configurado. Copie .env.example para .env e preencha o token.")
+    try:
+        ReminderBot().run(TOKEN, log_handler=None)
+    except discord.PrivilegedIntentsRequired:
+        sys.exit("O Discord recusou o 'Server Members Intent'. Ligue-o no Developer Portal "
+                 "(aba Bot > Privileged Gateway Intents) ou use MEMBERS_INTENT=false no .env.")

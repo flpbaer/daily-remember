@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Atalho: ./dr <comando>  (ex: ./dr add, ./dr list, ./dr bot)
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/.venv/bin/python" -m daily_remember "$@"
