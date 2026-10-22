@@ -51,7 +51,9 @@ Em outro terminal, gerencie os lembretes:
 ./dr edit 1
 ./dr pause 1
 ./dr resume 1
-./dr send 1       # envia agora, sem mexer na agenda (bom para testar)
+./dr test 1       # manda só no SEU privado, para ver como ficou (ninguém mais recebe)
+./dr send 1       # envia agora para todos os destinatários, sem mexer na agenda
+./dr me           # troca qual é o seu usuário (destino dos testes)
 ./dr delete 1
 ./dr history      # últimos envios (enviado / erro / pulado)
 ```
