@@ -62,7 +62,7 @@ def destination_of(r: Dict[str, Any]) -> str:
 def print_reminder(data: Dict[str, Any], header: str = "Pré-visualização") -> None:
     lines = [f"[bold]Destino:[/] {destination_of(data)}",
              f"[bold]Agenda:[/] {schedule.describe(data['schedule'])}"]
-    runs = schedule.upcoming(data["schedule"])
+    runs = schedule.upcoming(data["schedule"], 5 if data["schedule"]["type"] in schedule.MULTI_PER_DAY else 3)
     if runs:
         lines.append("[bold]Próximos envios:[/] " + ", ".join(f"{r:%d/%m %H:%M}" for r in runs))
     if data["mentions"]:
@@ -185,6 +185,8 @@ def ask_schedule(current: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             Choice("Todos os dias", "daily"),
             Choice("Dias úteis (segunda a sexta)", "weekdays"),
             Choice("Dias específicos da semana", "weekly"),
+            Choice("Várias vezes ao dia (ex: manhã, tarde e noite)", "times"),
+            Choice("A cada X tempo (ex: de hora em hora, das 9h às 18h)", "interval"),
             Choice("Uma vez por mês", "monthly"),
             Choice("Uma única vez (data e hora)", "once"),
             Choice("Avançado: expressão cron", "cron"),
@@ -192,16 +194,75 @@ def ask_schedule(current: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         default=current.get("type", "weekdays"),
     ).unsafe_ask()
 
-    def ask_time() -> str:
+    def ask_time(label: str = "Horário (HH:MM):", default: Optional[str] = None) -> str:
         value = questionary.text(
-            "Horário (HH:MM):", default=current.get("time", "09:00"),
+            label, default=default or current.get("time", "09:00"),
             validate=lambda v: schedule.is_valid_time(v) or "Use o formato HH:MM, ex: 09:30",
         ).unsafe_ask()
         hour, minute = schedule.parse_time(value)
         return f"{hour:02d}:{minute:02d}"
 
+    def ask_days() -> List[str]:
+        current_days = current.get("days", schedule.WORKDAYS)
+        preset = ("all" if sorted(current_days) == sorted(schedule.ALL_DAYS) else
+                  "workdays" if sorted(current_days) == sorted(schedule.WORKDAYS) else "custom")
+        which = questionary.select(
+            "Em quais dias?",
+            choices=[Choice("Todos os dias", "all"), Choice("Dias úteis (segunda a sexta)", "workdays"),
+                     Choice("Escolher os dias", "custom")],
+            default=preset,
+        ).unsafe_ask()
+        if which == "all":
+            return list(schedule.ALL_DAYS)
+        if which == "workdays":
+            return list(schedule.WORKDAYS)
+        return questionary.checkbox(
+            "Quais dias?",
+            choices=[Choice(label, value=code, checked=code in current_days) for code, label in schedule.WEEKDAYS],
+            validate=lambda v: bool(v) or "Escolha pelo menos um dia",
+        ).unsafe_ask()
+
     if kind in ("daily", "weekdays"):
         return {"type": kind, "time": ask_time()}
+
+    if kind == "times":
+        def parse_times(value: str) -> List[str]:
+            parts = [p for p in value.replace(";", ",").split(",") if p.strip()]
+            return sorted({"%02d:%02d" % schedule.parse_time(p) for p in parts})
+
+        def valid_times(value: str):
+            try:
+                return bool(parse_times(value)) or "Informe pelo menos um horário"
+            except ValueError:
+                return "Use HH:MM separados por vírgula, ex: 09:00, 14:00, 19:00"
+
+        raw = questionary.text(
+            "Horários (separados por vírgula):",
+            default=", ".join(current.get("times", ["09:00", "14:00", "19:00"])),
+            validate=valid_times,
+        ).unsafe_ask()
+        return {"type": "times", "times": parse_times(raw), "days": ask_days()}
+
+    if kind == "interval":
+        every = questionary.select(
+            "Com que frequência?",
+            choices=[Choice("A cada 30 minutos", 30), Choice("A cada 1 hora", 60),
+                     Choice("A cada 2 horas", 120), Choice("A cada 3 horas", 180),
+                     Choice("Outro intervalo (em minutos)", 0)],
+            default=current.get("every") if current.get("every") in (30, 60, 120, 180) else 60,
+        ).unsafe_ask()
+        if not every:
+            every = int(questionary.text(
+                "Intervalo em minutos (mínimo 5):", default=str(current.get("every", 90)),
+                validate=lambda v: (v.strip().isdigit() and int(v) >= 5) or "Informe um número de minutos ≥ 5",
+            ).unsafe_ask())
+        while True:
+            start = ask_time("Começa às (HH:MM):", current.get("start", "09:00"))
+            end = ask_time("Termina às (HH:MM):", current.get("end", "18:00"))
+            if end >= start:
+                break
+            console.print("[red]O horário final precisa ser depois do inicial (dentro do mesmo dia).[/]")
+        return {"type": "interval", "every": every, "start": start, "end": end, "days": ask_days()}
 
     if kind == "weekly":
         chosen = set(current.get("days", []))

@@ -3,6 +3,7 @@
 Bot de Discord que envia lembretes agendados para o squad, configurado pelo terminal.
 
 - Agendas: todo dia, dias úteis, dias específicos da semana, mensal, uma única vez ou expressão cron.
+- Várias vezes ao dia: horários fixos (ex.: `09:00, 14:00, 19:00`) ou intervalo (ex.: de hora em hora, das 9h às 18h), em todos os dias, dias úteis ou dias escolhidos.
 - Destino por lembrete:
   - **Privado** (padrão): o bot manda uma DM para cada pessoa escolhida. Você pode escolher pessoas ou um cargo inteiro, e o cargo é expandido na hora do envio, então quem entrar nele depois também recebe.
   - **Canal**: anúncio geral num canal, com menções (`@everyone`, `@here`, cargos, membros).
