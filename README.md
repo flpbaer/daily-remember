@@ -54,7 +54,7 @@ Em outro terminal, gerencie os lembretes:
 ./dr resume 1
 ./dr test 1       # manda só no SEU privado, para ver como ficou (ninguém mais recebe)
 ./dr send 1       # envia agora para todos os destinatários, sem mexer na agenda
-./dr me           # troca qual é o seu usuário (destino dos testes)
+./dr me           # troca qual é o seu usuário (recebe os testes e uma cópia de todo envio)
 ./dr delete 1
 ./dr history      # últimos envios (enviado / erro / pulado)
 ```
@@ -68,6 +68,7 @@ No campo de mensagem, que aceita várias linhas, pressione **Esc e depois Enter*
 - **Fuso horário:** `TIMEZONE` no `.env` (padrão `America/Sao_Paulo`).
 - **Bot desligado no horário:** ao voltar, ele envia se o atraso for menor que `GRACE_MINUTES` (padrão 30). Se for maior, pula aquele envio e registra no histórico, para não disparar lembretes velhos.
 - **Privado:** o bot só consegue mandar DM para quem está num servidor onde ele também está. Quem bloqueou DMs de membros do servidor não recebe. Nesse caso o histórico mostra `parcial` com o nome de quem falhou, e os outros recebem normalmente.
+- **Cópia para você:** todo envio real de qualquer lembrete também chega no seu privado (o usuário definido em `./dr me`). Se você já era destinatário, recebe só uma vez; se não era, a mensagem vem marcada como "📋 Cópia do lembrete".
 - **Lembrete "uma única vez":** depois do envio, fica como `concluído`.
 - **Mensal no dia 29–31:** meses sem esse dia são pulados. Para "último dia do mês", use `L`.
 - Os dados ficam em `data/daily_remember.db` (SQLite).

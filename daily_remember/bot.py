@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import discord
 from discord.ext import tasks
@@ -86,16 +86,28 @@ class ReminderBot(discord.Client):
             except Exception as exc:
                 failures.append(f"canal ({exc})")
 
-        if delivery in ("dm", "both"):
-            for user_id, name in self.resolve_recipients(reminder["recipients"]).items():
-                try:
-                    user = self.get_user(user_id) or await self.fetch_user(user_id)
-                    await user.send(**self.build_message(reminder, name=name, mentions=False))
-                    ok += 1
-                except discord.Forbidden:
-                    failures.append(f"{name} (DM fechada)")
-                except Exception as exc:
-                    failures.append(f"{name} ({exc})")
+        recipients = self.resolve_recipients(reminder["recipients"]) if delivery in ("dm", "both") else {}
+        # O dono (./dr me) recebe todo envio no privado. Se ele não era destinatário,
+        # a mensagem vem marcada como cópia para não confundir com um lembrete pessoal.
+        copy_to: Optional[int] = None
+        owner_id = db.get_setting("my_user_id")
+        if owner_id and int(owner_id) not in recipients:
+            copy_to = int(owner_id)
+            recipients.update(self.resolve_recipients([{"type": "user", "id": owner_id, "name": "você"}]))
+
+        for user_id, name in recipients.items():
+            try:
+                user = self.get_user(user_id) or await self.fetch_user(user_id)
+                message = self.build_message(reminder, name=name, mentions=False)
+                if user_id == copy_to:
+                    note = f"📋 Cópia do lembrete #{reminder['id']} ({reminder['name']})"
+                    message["content"] = f"{note}\n\n{message['content']}" if message.get("content") else note
+                await user.send(**message)
+                ok += 1
+            except discord.Forbidden:
+                failures.append(f"{name} (DM fechada)")
+            except Exception as exc:
+                failures.append(f"{name} ({exc})")
 
         total = ok + len(failures)
         status = "enviado" if not failures else ("parcial" if ok else "erro")

@@ -451,7 +451,7 @@ def cmd_send(args: argparse.Namespace) -> None:
 
 
 def my_user_id(change: bool = False) -> str:
-    """Seu ID no Discord, perguntado uma vez e salvo no banco (para os testes)."""
+    """Seu ID no Discord, perguntado uma vez e salvo no banco (testes e cópia de todo envio)."""
     current = db.get_setting("my_user_id")
     if current and not change:
         return current
@@ -486,7 +486,7 @@ def cmd_test(args: argparse.Namespace) -> None:
 
 def cmd_me(_args: argparse.Namespace) -> None:
     user_id = my_user_id(change=True)
-    console.print(f"[green]✔ Testes serão enviados para o usuário {user_id}.[/]")
+    console.print(f"[green]✔ Testes e cópias de todos os envios irão para o usuário {user_id}.[/]")
 
 
 def cmd_history(args: argparse.Namespace) -> None:
@@ -521,7 +521,7 @@ MENU = [
     ("Enviar agora para todos", "send"),
     ("Excluir lembrete", "delete"),
     ("Histórico de envios", "history"),
-    ("Trocar meu usuário (para testes)", "me"),
+    ("Trocar meu usuário (testes e cópias)", "me"),
 ]
 
 
@@ -566,7 +566,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                             ("test", "manda só no seu privado, para testar")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("id", type=int, nargs="?", help="ID do lembrete (se omitido, pergunta)")
-    sub.add_parser("me", help="define/troca seu usuário do Discord (destino dos testes)")
+    sub.add_parser("me", help="define/troca seu usuário do Discord (recebe testes e cópia de todo envio)")
     h = sub.add_parser("history", help="histórico de envios")
     h.add_argument("id", type=int, nargs="?")
     h.add_argument("-n", type=int, default=20, help="quantidade de registros")
