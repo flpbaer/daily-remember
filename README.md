@@ -21,10 +21,10 @@ Bot de Discord que envia lembretes agendados para o squad, configurado pelo term
 4. Aba **OAuth2** → copie o **Client ID** e abra no navegador (troque `SEU_CLIENT_ID`):
 
    ```
-   https://discord.com/oauth2/authorize?client_id=SEU_CLIENT_ID&scope=bot+applications.commands&permissions=150528
+   https://discord.com/oauth2/authorize?client_id=SEU_CLIENT_ID&scope=bot+applications.commands&permissions=360777403392
    ```
 
-   (permissões: ver canais, enviar mensagens, inserir links e mencionar @everyone; `applications.commands` habilita o `/code-review`.)
+   (permissões: ver canais, enviar mensagens, inserir links, mencionar @everyone, criar threads privadas, enviar mensagens em threads e gerenciar threads; `applications.commands` habilita o `/code-review`.)
 
 ## 2. Instalar
 
@@ -58,7 +58,7 @@ Em outro terminal, gerencie os lembretes:
 ./dr delete 1
 ./dr history      # últimos envios (enviado / erro / pulado)
 ./dr reviews      # code reviews em aberto (--all inclui os finalizados)
-./dr review-channel  # em qual canal o /code-review pode ser usado
+./dr review-channel  # canal do painel de code review (rode de novo para republicar o painel)
 ```
 
 Com o bot rodando, canais, cargos e membros aparecem como opções no assistente. Sem ele, dá para informar os IDs manualmente: ative o Modo Desenvolvedor no Discord (Configurações → Avançado) e use "Copiar ID".
@@ -67,15 +67,23 @@ No campo de mensagem, que aceita várias linhas, pressione **Esc e depois Enter*
 
 ## Code review
 
-No canal de code review, qualquer pessoa usa **`/code-review`**, escolhe o tipo (implementação nova, ajuste, correção de bug, voltou de ajuste do code review, voltou/reaberta, outro) e preenche o link da tarefa, o link do PR e a descrição.
+Funciona como um sistema de tickets. Com `./dr review-channel` você escolhe o canal de code review, e o bot publica nele um painel com o botão **📝 Registrar code review**.
 
-1. O bot publica um card no canal e manda o code review no privado do revisor (o usuário de `./dr me`).
-2. No privado, o revisor tem os botões **🔍 Em revisão**, **✅ Aprovado**, **✏️ Ajustes solicitados**, **💬 Revisado** e **🚫 Cancelado**. Cada clique atualiza o card e marca o autor no canal.
-3. Com ajustes solicitados, o card ganha o botão **🔁 Ajustes feitos**. O autor clica, conta o que mudou (opcional), e o code review volta para o revisor como uma nova rodada.
+1. A pessoa clica no botão (ou usa **`/code-review`**) e preenche o formulário: tipo (implementação nova, ajuste, correção de bug, voltou de ajuste do code review, voltou/reaberta, outro), link da tarefa, link do PR e descrição.
+2. O bot abre uma **thread privada** só com o autor e o revisor (o usuário de `./dr me`), publica o card nela e manda o code review no privado do revisor. O canal fica limpo, só com o painel.
+3. No privado, o revisor tem os botões **🔍 Em revisão**, **✅ Aprovado**, **✏️ Ajustes solicitados**, **💬 Revisado** e **🚫 Cancelado**. Cada clique atualiza o card e marca o autor na thread.
+4. Com ajustes solicitados, o card ganha o botão **🔁 Ajustes feitos**. O autor clica, conta o que mudou (opcional), e o code review volta para o revisor como uma nova rodada.
+5. Ao aprovar ou cancelar, a thread é arquivada e trancada. Se o status mudar depois, ela reabre.
 
-Os botões continuam funcionando depois de reiniciar o bot. Só o revisor muda o status, e só o autor (ou o revisor) devolve após ajustes. Para restringir o comando a um canal, use `./dr review-channel`.
+Os botões continuam funcionando depois de reiniciar o bot. Só o revisor muda o status, e só o autor (ou o revisor) devolve após ajustes.
 
-Se o `/code-review` não aparecer no Discord, convide o bot de novo com o link do passo 1 (ele inclui `applications.commands`) e reinicie o `./dr bot`.
+Configuração do canal no Discord:
+
+- O bot precisa de **Criar threads privadas**, **Enviar mensagens em threads** e **Gerenciar threads** no canal (o link do passo 1 já pede). Sem permissão para criar threads, o card vai para o próprio canal, como antes.
+- Para o canal ter só o painel, tire de @everyone a permissão **Enviar mensagens** nele e deixe **Enviar mensagens em threads** ligada, para o pessoal conversar no ticket.
+- Se apagarem o painel, rode `./dr review-channel` de novo e escolha o mesmo canal.
+
+Se o `/code-review` ou o painel não aparecerem, convide o bot de novo com o link do passo 1 e reinicie o `./dr bot`.
 
 ## Comportamento
 
