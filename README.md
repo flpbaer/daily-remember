@@ -21,10 +21,10 @@ Bot de Discord que envia lembretes agendados para o squad, configurado pelo term
 4. Aba **OAuth2** → copie o **Client ID** e abra no navegador (troque `SEU_CLIENT_ID`):
 
    ```
-   https://discord.com/oauth2/authorize?client_id=SEU_CLIENT_ID&scope=bot&permissions=150528
+   https://discord.com/oauth2/authorize?client_id=SEU_CLIENT_ID&scope=bot+applications.commands&permissions=150528
    ```
 
-   (permissões: ver canais, enviar mensagens, inserir links e mencionar @everyone.)
+   (permissões: ver canais, enviar mensagens, inserir links e mencionar @everyone; `applications.commands` habilita o `/code-review`.)
 
 ## 2. Instalar
 
@@ -57,11 +57,25 @@ Em outro terminal, gerencie os lembretes:
 ./dr me           # troca qual é o seu usuário (recebe os testes e uma cópia de todo envio)
 ./dr delete 1
 ./dr history      # últimos envios (enviado / erro / pulado)
+./dr reviews      # code reviews em aberto (--all inclui os finalizados)
+./dr review-channel  # em qual canal o /code-review pode ser usado
 ```
 
 Com o bot rodando, canais, cargos e membros aparecem como opções no assistente. Sem ele, dá para informar os IDs manualmente: ative o Modo Desenvolvedor no Discord (Configurações → Avançado) e use "Copiar ID".
 
 No campo de mensagem, que aceita várias linhas, pressione **Esc e depois Enter** para concluir.
+
+## Code review
+
+No canal de code review, qualquer pessoa usa **`/code-review`**, escolhe o tipo (implementação nova, ajuste, correção de bug, voltou de ajuste do code review, voltou/reaberta, outro) e preenche o link da tarefa, o link do PR e a descrição.
+
+1. O bot publica um card no canal e manda o code review no privado do revisor (o usuário de `./dr me`).
+2. No privado, o revisor tem os botões **🔍 Em revisão**, **✅ Aprovado**, **✏️ Ajustes solicitados**, **💬 Revisado** e **🚫 Cancelado**. Cada clique atualiza o card e marca o autor no canal.
+3. Com ajustes solicitados, o card ganha o botão **🔁 Ajustes feitos**. O autor clica, conta o que mudou (opcional), e o code review volta para o revisor como uma nova rodada.
+
+Os botões continuam funcionando depois de reiniciar o bot. Só o revisor muda o status, e só o autor (ou o revisor) devolve após ajustes. Para restringir o comando a um canal, use `./dr review-channel`.
+
+Se o `/code-review` não aparecer no Discord, convide o bot de novo com o link do passo 1 (ele inclui `applications.commands`) e reinicie o `./dr bot`.
 
 ## Comportamento
 
