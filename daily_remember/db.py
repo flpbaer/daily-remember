@@ -346,10 +346,11 @@ def add_review_event(review_id: int, status: str, by_name: str, note: Optional[s
         )
 
 
-def set_review_channel_message(review_id: int, message_id: int) -> None:
+def set_review_card(review_id: int, channel_id: int, message_id: int) -> None:
+    """Onde está o card do CR: a thread do ticket (ou o canal, se não deu para criar a thread)."""
     with connect() as conn:
-        conn.execute("UPDATE code_reviews SET channel_message_id = ? WHERE id = ?",
-                     (str(message_id), review_id))
+        conn.execute("UPDATE code_reviews SET channel_id = ?, channel_message_id = ? WHERE id = ?",
+                     (str(channel_id), str(message_id), review_id))
 
 
 def set_review_owner_message(review_id: int, channel_id: int, message_id: int) -> None:

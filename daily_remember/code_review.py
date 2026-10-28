@@ -1,10 +1,12 @@
-"""Code reviews registrados pelo time com /code-review.
+"""Code reviews registrados pelo time, no estilo "ticket".
 
-Fluxo: alguém usa /code-review no canal e preenche o formulário; o bot publica um
-card no canal e manda o CR no privado do revisor (o usuário de ./dr me) com botões
-de status. Cada mudança de status atualiza o card e avisa o autor no canal. Quando
-o revisor pede ajustes, o card ganha um botão para o autor devolver o CR, o que
-abre uma nova rodada e manda o CR de novo para o revisor.
+Fluxo: no canal de code review fica um painel com o botão "Registrar code review"
+(ou a pessoa usa /code-review). O formulário pede tipo, tarefa, PR e descrição. O bot
+abre uma thread privada só com o autor e o revisor (o usuário de ./dr me), publica o
+card nela e manda o CR no privado do revisor com botões de status. Cada mudança de
+status atualiza o card e avisa o autor na thread, sem poluir o canal. Quando o
+revisor pede ajustes, o card ganha um botão para o autor devolver o CR, o que abre
+uma nova rodada. Ao aprovar ou cancelar, a thread é arquivada.
 
 Os botões usam custom_id fixo (DynamicItem), então continuam funcionando depois
 que o bot reinicia.
@@ -12,7 +14,7 @@ que o bot reinicia.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import discord
@@ -43,6 +45,8 @@ STATUSES = {
 
 # Botões que o revisor vê no privado
 OWNER_ACTIONS = ("in_review", "approved", "changes_requested", "reviewed", "canceled")
+# Status que encerram o ticket (a thread é arquivada; volta a abrir se o status mudar)
+CLOSED_STATUSES = ("approved", "canceled")
 
 Review = Dict[str, Any]
 
@@ -181,8 +185,49 @@ async def change_status(interaction: discord.Interaction, review_id: int, status
     db.add_review_event(review_id, status, interaction.user.display_name)
     review = db.get_review(review_id)
     await interaction.response.edit_message(embed=review_embed(review), view=reviewer_view(review))
-    await update_channel_card(interaction.client, review)
-    await notify_author(interaction.client, review)
+    await sync_ticket(interaction.client, review)
+
+
+async def get_ticket(client: discord.Client, review: Review) -> Optional[discord.Thread]:
+    """A thread do CR, ou None se o card está num canal comum (ou a thread sumiu)."""
+    channel_id = int(review["channel_id"])
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(channel_id)
+        except discord.HTTPException:
+            return None
+    return channel if isinstance(channel, discord.Thread) else None
+
+
+async def sync_ticket(client: discord.Client, review: Review) -> None:
+    """Depois de mudar o status: reabre a thread se preciso, atualiza o card, avisa o autor
+    e arquiva a thread quando o CR termina."""
+    thread = await get_ticket(client, review)
+    if thread and (thread.archived or thread.locked):
+        try:
+            await thread.edit(archived=False, locked=False)
+        except discord.HTTPException as exc:
+            log.warning("Não consegui reabrir a thread do code review #%s: %s", review["id"], exc)
+    await update_channel_card(client, review)
+    await notify_author(client, review)
+    if thread and review["status"] in CLOSED_STATUSES:
+        await close_ticket(thread, review)
+
+
+async def close_ticket(thread: discord.Thread, review: Review) -> None:
+    try:
+        await thread.send(f"🔒 Code review finalizado como **{status_text(review['status'])}**. "
+                          "Este chat foi arquivado; ele volta a abrir se o status mudar.")
+        await thread.edit(archived=True, locked=True)
+    except discord.Forbidden:
+        # Trancar exige "Gerenciar threads"; sem ela, só arquiva
+        try:
+            await thread.edit(archived=True)
+        except discord.HTTPException as exc:
+            log.warning("Não consegui arquivar a thread do code review #%s: %s", review["id"], exc)
+    except discord.HTTPException as exc:
+        log.warning("Não consegui arquivar a thread do code review #%s: %s", review["id"], exc)
 
 
 async def update_channel_card(client: discord.Client, review: Review) -> None:
@@ -200,6 +245,8 @@ async def notify_author(client: discord.Client, review: Review) -> None:
     text = f"<@{review['author_id']}> seu code review #{review['id']} agora está **{status_text(review['status'])}**."
     if review["status"] == "changes_requested":
         text += " Quando terminar, clique em **🔁 Ajustes feitos** no card."
+    if review["status"] == "in_review":
+        text += " 👀"
     try:
         channel = client.get_partial_messageable(int(review["channel_id"]))
         await channel.send(f"{text}\n{jump_url(review)}",
@@ -233,24 +280,29 @@ async def send_to_reviewer(client: discord.Client, review: Review, intro: str) -
 
 # --- Formulários -----------------------------------------------------------
 
-class ReviewModal(discord.ui.Modal):
-    task_url = discord.ui.TextInput(label="Link da tarefa", placeholder="https://...", max_length=300)
-    pr_url = discord.ui.TextInput(label="Link do PR", placeholder="https://github.com/.../pull/123",
-                                  max_length=300)
-    description = discord.ui.TextInput(
-        label="Descrição", style=discord.TextStyle.paragraph, max_length=1000,
+class ReviewModal(discord.ui.Modal, title="Registrar code review"):
+    kind = discord.ui.Label(text="Tipo", component=discord.ui.Select(
+        placeholder="Que tipo de mudança vai para revisão?",
+        options=[discord.SelectOption(label=label, value=key) for key, label in KINDS.items()],
+    ))
+    task_url = discord.ui.Label(text="Link da tarefa", component=discord.ui.TextInput(
+        placeholder="https://...", max_length=300))
+    pr_url = discord.ui.Label(text="Link do PR", component=discord.ui.TextInput(
+        placeholder="https://github.com/.../pull/123", max_length=300))
+    description = discord.ui.Label(text="Descrição", component=discord.ui.TextInput(
+        style=discord.TextStyle.paragraph, max_length=1000,
         placeholder="O que mudou e onde focar a revisão",
-    )
-
-    def __init__(self, kind: str) -> None:
-        super().__init__(title=f"Code review: {KINDS[kind]}"[:45])
-        self.kind = kind
+    ))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not is_url(self.pr_url.value):
+        kind = self.kind.component.values[0]
+        task_url = self.task_url.component.value.strip()
+        pr_url = self.pr_url.component.value.strip()
+        description = self.description.component.value.strip()
+        if not is_url(pr_url):
             await interaction.response.send_message(
                 "O link do PR precisa começar com http:// ou https://. Seus dados, para copiar:\n"
-                f"```\nTarefa: {self.task_url.value}\nPR: {self.pr_url.value}\n\n{self.description.value}\n```",
+                f"```\nTarefa: {task_url}\nPR: {pr_url}\n\n{description}\n```",
                 ephemeral=True,
             )
             return
@@ -258,16 +310,47 @@ class ReviewModal(discord.ui.Modal):
         author = interaction.user
         review_id = db.create_review(
             guild_id=interaction.guild_id, channel_id=interaction.channel_id, author_id=author.id,
-            author_name=author.display_name, kind=self.kind, task_url=self.task_url.value.strip(),
-            pr_url=self.pr_url.value.strip(), description=self.description.value.strip(),
+            author_name=author.display_name, kind=kind, task_url=task_url, pr_url=pr_url,
+            description=description,
         )
         review = db.get_review(review_id)
-        card = await interaction.channel.send(embed=review_embed(review), view=channel_view(review))
-        db.set_review_channel_message(review_id, card.id)
-        await interaction.followup.send(f"✅ Code review #{review_id} registrado! Você será avisado aqui "
-                                        "quando o status mudar.", ephemeral=True)
+        target = await open_ticket(interaction, review)
+        card = await target.send(
+            content=f"<@{author.id}> seu code review foi registrado. O andamento aparece aqui.",
+            embed=review_embed(review), view=channel_view(review),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+        db.set_review_card(review_id, target.id, card.id)
+        await interaction.followup.send(f"✅ Code review #{review_id} registrado! Acompanhe em {target.mention}.",
+                                        ephemeral=True)
         await send_to_reviewer(interaction.client, db.get_review(review_id),
                                f"📥 Novo code review de **{author.display_name}**")
+
+
+async def open_ticket(interaction: discord.Interaction, review: Review) -> discord.abc.Messageable:
+    """Cria a thread privada do CR com o autor e o revisor. Se não der, usa o próprio canal."""
+    channel = interaction.channel
+    if isinstance(channel, discord.Thread):
+        channel = channel.parent
+    try:
+        thread = await channel.create_thread(
+            name=f"CR #{review['id']} · {review['author_name']} · {KINDS[review['kind']]}"[:100],
+            type=discord.ChannelType.private_thread, invitable=False, auto_archive_duration=10080,
+        )
+    except (discord.HTTPException, AttributeError) as exc:
+        log.warning("Não consegui criar a thread do code review #%s (%s); o card vai no canal",
+                    review["id"], exc)
+        return interaction.channel
+    members = {interaction.user.id}
+    owner_id = db.get_setting("my_user_id")
+    if owner_id:
+        members.add(int(owner_id))
+    for user_id in members:
+        try:
+            await thread.add_user(discord.Object(user_id))
+        except discord.HTTPException as exc:
+            log.warning("Não consegui adicionar %s à thread do code review #%s: %s", user_id, review["id"], exc)
+    return thread
 
 
 class ResubmitModal(discord.ui.Modal, title="Devolver para revisão"):
@@ -295,16 +378,79 @@ class ResubmitModal(discord.ui.Modal, title="Devolver para revisão"):
         )
 
 
+# --- Painel do canal -------------------------------------------------------
+
+class NewReviewButton(discord.ui.DynamicItem[discord.ui.Button], template=r"cr-new"):
+    def __init__(self) -> None:
+        super().__init__(discord.ui.Button(
+            label="Registrar code review", emoji="📝", style=discord.ButtonStyle.primary, custom_id="cr-new",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match):
+        return cls()
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(ReviewModal())
+
+
+def panel_message() -> Dict[str, Any]:
+    embed = discord.Embed(
+        title="📋 Code review",
+        description=(
+            "Precisa de revisão? Clique em **Registrar code review** e preencha o tipo, a tarefa, "
+            "o PR e uma descrição.\n\n"
+            "O bot abre um chat privado só entre você e o revisor. O andamento (em revisão, "
+            "ajustes, aprovado) aparece lá, e o chat é arquivado quando o code review termina."
+        ),
+        color=discord.Color.blurple(),
+    )
+    view = discord.ui.View(timeout=None)
+    view.add_item(NewReviewButton())
+    return {"embed": embed, "view": view}
+
+
+async def ensure_panel(client: discord.Client) -> None:
+    """Mantém o painel publicado no canal de code review (setting review_channel_id).
+
+    O painel publicado fica salvo em review_panel ("canal:mensagem"). A CLI pede uma nova
+    publicação marcando review_panel_refresh; o painel antigo é apagado.
+    """
+    channel_id = db.get_setting("review_channel_id") or ""
+    panel = db.get_setting("review_panel") or ""
+    refresh = db.get_setting("review_panel_refresh") == "1"
+    if panel.split(":")[0] == channel_id and not refresh:
+        return
+    db.set_setting("review_panel_refresh", "")
+    old_channel, _, old_message = panel.partition(":")
+    if old_message:
+        try:
+            await client.get_partial_messageable(int(old_channel)).get_partial_message(int(old_message)).delete()
+        except discord.HTTPException:
+            pass
+    if not channel_id:
+        db.set_setting("review_panel", "")
+        return
+    try:
+        channel = client.get_channel(int(channel_id)) or await client.fetch_channel(int(channel_id))
+        message = await channel.send(**panel_message())
+    except Exception as exc:
+        # Salva sem mensagem para não tentar de novo a cada ciclo; ./dr review-channel tenta outra vez
+        log.error("Não consegui publicar o painel de code review em %s: %s", channel_id, exc)
+        db.set_setting("review_panel", f"{channel_id}:")
+        return
+    db.set_setting("review_panel", f"{channel_id}:{message.id}")
+    log.info("Painel de code review publicado em #%s", getattr(channel, "name", channel_id))
+
+
 # --- Slash command ---------------------------------------------------------
 
 @app_commands.command(name="code-review", description="Registrar um code review pendente para o revisor")
-@app_commands.describe(tipo="Que tipo de mudança vai para revisão?")
-@app_commands.choices(tipo=[app_commands.Choice(name=label, value=key) for key, label in KINDS.items()])
 @app_commands.guild_only()
-async def code_review_command(interaction: discord.Interaction, tipo: app_commands.Choice[str]) -> None:
+async def code_review_command(interaction: discord.Interaction) -> None:
     allowed_channel = db.get_setting("review_channel_id")
     if allowed_channel and str(interaction.channel_id) != allowed_channel:
-        await interaction.response.send_message(f"Use este comando no canal <#{allowed_channel}>.",
+        await interaction.response.send_message(f"Use o painel do canal <#{allowed_channel}>.",
                                                 ephemeral=True)
         return
-    await interaction.response.send_modal(ReviewModal(tipo.value))
+    await interaction.response.send_modal(ReviewModal())

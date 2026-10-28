@@ -41,7 +41,8 @@ class ReminderBot(discord.Client):
 
     async def setup_hook(self) -> None:
         # Botões dos code reviews continuam respondendo mesmo em mensagens antigas
-        self.add_dynamic_items(code_review.StatusButton, code_review.ResubmitButton)
+        self.add_dynamic_items(code_review.StatusButton, code_review.ResubmitButton,
+                               code_review.NewReviewButton)
         self.dispatch_loop.start()
         self.sync_cache_loop.start()
 
@@ -75,6 +76,10 @@ class ReminderBot(discord.Client):
                 await self._dispatch(reminder, now, grace)
             except Exception:
                 log.exception("Erro processando lembrete #%s", reminder["id"])
+        try:
+            await code_review.ensure_panel(self)
+        except Exception:
+            log.exception("Erro ao publicar o painel de code review")
 
     async def _dispatch(self, reminder: Dict[str, Any], now: datetime, grace: timedelta) -> None:
         scheduled_at = db.from_iso(reminder["next_run_at"])
