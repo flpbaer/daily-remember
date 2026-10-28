@@ -51,6 +51,32 @@ CREATE TABLE IF NOT EXISTS discord_cache (
     guild TEXT NOT NULL,
     PRIMARY KEY (kind, id)
 );
+CREATE TABLE IF NOT EXISTS code_reviews (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id           TEXT NOT NULL,
+    channel_id         TEXT NOT NULL,
+    channel_message_id TEXT,
+    author_id          TEXT NOT NULL,
+    author_name        TEXT NOT NULL,
+    kind               TEXT NOT NULL,
+    task_url           TEXT NOT NULL,
+    pr_url             TEXT NOT NULL,
+    description        TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending',
+    round              INTEGER NOT NULL DEFAULT 1,
+    owner_channel_id   TEXT,
+    owner_message_id   TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS code_review_events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id INTEGER NOT NULL,
+    at        TEXT NOT NULL,
+    status    TEXT NOT NULL,
+    by_name   TEXT NOT NULL,
+    note      TEXT
+);
 """
 
 JSON_FIELDS = ("mentions", "links", "schedule", "recipients")
@@ -257,3 +283,76 @@ def list_cache(kind: str) -> List[Dict[str, str]]:
             "SELECT id, name, guild FROM discord_cache WHERE kind = ? ORDER BY guild, name", (kind,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- Code reviews ----------------------------------------------------------
+
+OPEN_REVIEW_STATUSES = ("pending", "in_review", "changes_requested")
+
+
+def create_review(guild_id: int, channel_id: int, author_id: int, author_name: str, kind: str,
+                  task_url: str, pr_url: str, description: str) -> int:
+    now = now_iso()
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO code_reviews (guild_id, channel_id, author_id, author_name, kind, task_url, "
+            "pr_url, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(guild_id), str(channel_id), str(author_id), author_name, kind, task_url, pr_url,
+             description, now, now),
+        )
+        conn.execute(
+            "INSERT INTO code_review_events (review_id, at, status, by_name) VALUES (?, ?, 'pending', ?)",
+            (cur.lastrowid, now, author_name),
+        )
+        return cur.lastrowid
+
+
+def get_review(review_id: int) -> Optional[Dict[str, Any]]:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM code_reviews WHERE id = ?", (review_id,)).fetchone()
+        if not row:
+            return None
+        events = conn.execute(
+            "SELECT at, status, by_name, note FROM code_review_events WHERE review_id = ? ORDER BY id",
+            (review_id,),
+        ).fetchall()
+    review = dict(row)
+    review["events"] = [dict(e) for e in events]
+    return review
+
+
+def list_reviews(open_only: bool = True) -> List[Dict[str, Any]]:
+    query = "SELECT * FROM code_reviews"
+    params: tuple = ()
+    if open_only:
+        query += f" WHERE status IN ({', '.join('?' for _ in OPEN_REVIEW_STATUSES)})"
+        params = OPEN_REVIEW_STATUSES
+    with connect() as conn:
+        rows = conn.execute(query + " ORDER BY id", params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_review_event(review_id: int, status: str, by_name: str, note: Optional[str] = None,
+                     new_round: bool = False) -> None:
+    now = now_iso()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE code_reviews SET status = ?, updated_at = ?, round = round + ? WHERE id = ?",
+            (status, now, 1 if new_round else 0, review_id),
+        )
+        conn.execute(
+            "INSERT INTO code_review_events (review_id, at, status, by_name, note) VALUES (?, ?, ?, ?, ?)",
+            (review_id, now, status, by_name, note or None),
+        )
+
+
+def set_review_channel_message(review_id: int, message_id: int) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE code_reviews SET channel_message_id = ? WHERE id = ?",
+                     (str(message_id), review_id))
+
+
+def set_review_owner_message(review_id: int, channel_id: int, message_id: int) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE code_reviews SET owner_channel_id = ?, owner_message_id = ? WHERE id = ?",
+                     (str(channel_id), str(message_id), review_id))
