@@ -509,11 +509,11 @@ def cmd_reviews(args: argparse.Namespace) -> None:
 def cmd_review_channel(_args: argparse.Namespace) -> None:
     current = db.get_setting("review_channel_id")
     channels = db.list_cache("channel")
-    choices = [Choice("Qualquer canal (sem restrição)", value="")]
+    choices = [Choice("Nenhum (sem painel; /code-review em qualquer canal)", value="")]
     choices += [Choice(f"#{c['name']}  ({c['guild']})", value=c["id"]) for c in channels]
     choices.append(Choice("Digitar ID manualmente", value=MANUAL))
     picked = questionary.select(
-        "Em qual canal o /code-review pode ser usado?", choices=choices,
+        "Em qual canal fica o painel de code review?", choices=choices,
         default=current if any(c["id"] == current for c in channels) else "",
     ).unsafe_ask()
     if picked == MANUAL:
@@ -522,8 +522,10 @@ def cmd_review_channel(_args: argparse.Namespace) -> None:
             validate=lambda v: v.strip().isdigit() or "Informe apenas números (ID do canal)",
         ).unsafe_ask().strip()
     db.set_setting("review_channel_id", picked)
-    console.print(f"[green]✔ /code-review liberado em {channel_name(picked)}.[/]" if picked
-                  else "[green]✔ /code-review liberado em qualquer canal.[/]")
+    db.set_setting("review_panel_refresh", "1")  # o bot (re)publica o painel no próximo ciclo
+    console.print(f"[green]✔ Painel de code review será publicado em {channel_name(picked)} "
+                  "em até 15s (com o bot rodando).[/]" if picked
+                  else "[green]✔ Sem painel; /code-review liberado em qualquer canal.[/]")
 
 
 def cmd_history(args: argparse.Namespace) -> None:
@@ -559,7 +561,7 @@ MENU = [
     ("Excluir lembrete", "delete"),
     ("Histórico de envios", "history"),
     ("Code reviews em aberto", "reviews"),
-    ("Canal do /code-review", "review-channel"),
+    ("Canal do painel de code review", "review-channel"),
     ("Trocar meu usuário (testes, cópias e code reviews)", "me"),
 ]
 
@@ -608,7 +610,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     sub.add_parser("me", help="define/troca seu usuário do Discord (recebe testes, cópias e code reviews)")
     r = sub.add_parser("reviews", help="lista os code reviews em aberto")
     r.add_argument("--all", action="store_true", help="inclui aprovados, revisados e cancelados")
-    sub.add_parser("review-channel", help="define em qual canal o /code-review pode ser usado")
+    sub.add_parser("review-channel",
+                   help="define o canal do painel de code review (rode de novo para republicar o painel)")
     h = sub.add_parser("history", help="histórico de envios")
     h.add_argument("id", type=int, nargs="?")
     h.add_argument("-n", type=int, default=20, help="quantidade de registros")
