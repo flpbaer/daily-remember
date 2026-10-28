@@ -465,18 +465,24 @@ MENU = [
 
 
 def interactive_menu() -> None:
+    action = None
     while True:
-        console.print()
+        console.clear()
         action = questionary.select(
             "daily-remember — o que deseja fazer?",
             choices=[Choice(label, value) for label, value in MENU] + [Choice("Sair", "quit")],
+            default=action,
         ).unsafe_ask()
         if action == "quit":
             return
+        console.print()
         try:
             COMMANDS[action](argparse.Namespace(id=None, n=20))
         except KeyboardInterrupt:
             console.print("[dim]Cancelado.[/]")
+        # Segura o resultado na tela até a pessoa ler; senão o menu redesenha por cima
+        console.print()
+        questionary.press_any_key_to_continue("Pressione qualquer tecla para voltar ao menu...").ask()
 
 
 COMMANDS = {
