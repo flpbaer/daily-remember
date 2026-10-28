@@ -1,5 +1,7 @@
 """Processo do bot: fica rodando e envia os lembretes na hora certa.
 
+Também atende o /code-review (ver code_review.py).
+
 Não guarda agendamentos em memória: a cada POLL_SECONDS consulta o banco, então
 qualquer mudança feita pela CLI vale no próximo ciclo, sem reiniciar.
 """
@@ -11,9 +13,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import discord
+from discord import app_commands
 from discord.ext import tasks
 
-from . import db, schedule
+from . import code_review, db, schedule
 from .config import GRACE_MINUTES, MEMBERS_INTENT, POLL_SECONDS, TOKEN, TZ
 from .message import apply_variables, mention_tokens
 
@@ -32,13 +35,34 @@ class ReminderBot(discord.Client):
         intents = discord.Intents.default()
         intents.members = MEMBERS_INTENT
         super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+        self.tree.add_command(code_review.code_review_command)
+        self._commands_synced = False
 
     async def setup_hook(self) -> None:
+        # Botões dos code reviews continuam respondendo mesmo em mensagens antigas
+        self.add_dynamic_items(code_review.StatusButton, code_review.ResubmitButton)
         self.dispatch_loop.start()
         self.sync_cache_loop.start()
 
     async def on_ready(self) -> None:
         log.info("Conectado como %s em %d servidor(es)", self.user, len(self.guilds))
+        if not self._commands_synced:
+            for guild in self.guilds:
+                await self.sync_commands(guild)
+            self._commands_synced = True
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self.sync_commands(guild)
+
+    async def sync_commands(self, guild: discord.Guild) -> None:
+        """Registra os slash commands por servidor (aparecem na hora, ao contrário dos globais)."""
+        try:
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            log.info("Comandos registrados em %s", guild.name)
+        except Exception as exc:
+            log.error("Não consegui registrar os comandos em %s: %s", guild.name, exc)
 
     # --- Envio -------------------------------------------------------------
 
