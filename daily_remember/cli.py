@@ -489,6 +489,43 @@ def cmd_me(_args: argparse.Namespace) -> None:
     console.print(f"[green]✔ Testes e cópias de todos os envios irão para o usuário {user_id}.[/]")
 
 
+def cmd_reviews(args: argparse.Namespace) -> None:
+    from .code_review import KINDS, status_text  # importa discord; só quando precisa
+
+    show_all = getattr(args, "all", False)
+    reviews = db.list_reviews(open_only=not show_all)
+    if not reviews:
+        console.print("Nenhum code review " + ("registrado." if show_all else "em aberto. 🎉"))
+        return
+    table = Table(title="Code reviews" + ("" if show_all else " em aberto"))
+    for col in ("ID", "Tipo", "Autor", "Status", "Rodada", "PR", "Registrado"):
+        table.add_column(col)
+    for r in reviews:
+        table.add_row(str(r["id"]), KINDS.get(r["kind"], r["kind"]), r["author_name"], status_text(r["status"]),
+                      str(r["round"]), f"[link={r['pr_url']}]{r['pr_url']}[/link]", fmt_dt(r["created_at"]))
+    console.print(table)
+
+
+def cmd_review_channel(_args: argparse.Namespace) -> None:
+    current = db.get_setting("review_channel_id")
+    channels = db.list_cache("channel")
+    choices = [Choice("Qualquer canal (sem restrição)", value="")]
+    choices += [Choice(f"#{c['name']}  ({c['guild']})", value=c["id"]) for c in channels]
+    choices.append(Choice("Digitar ID manualmente", value=MANUAL))
+    picked = questionary.select(
+        "Em qual canal o /code-review pode ser usado?", choices=choices,
+        default=current if any(c["id"] == current for c in channels) else "",
+    ).unsafe_ask()
+    if picked == MANUAL:
+        picked = questionary.text(
+            "ID do canal:", default=current or "",
+            validate=lambda v: v.strip().isdigit() or "Informe apenas números (ID do canal)",
+        ).unsafe_ask().strip()
+    db.set_setting("review_channel_id", picked)
+    console.print(f"[green]✔ /code-review liberado em {channel_name(picked)}.[/]" if picked
+                  else "[green]✔ /code-review liberado em qualquer canal.[/]")
+
+
 def cmd_history(args: argparse.Namespace) -> None:
     rows = db.history(args.id, args.n)
     if not rows:
@@ -521,7 +558,9 @@ MENU = [
     ("Enviar agora para todos", "send"),
     ("Excluir lembrete", "delete"),
     ("Histórico de envios", "history"),
-    ("Trocar meu usuário (testes e cópias)", "me"),
+    ("Code reviews em aberto", "reviews"),
+    ("Canal do /code-review", "review-channel"),
+    ("Trocar meu usuário (testes, cópias e code reviews)", "me"),
 ]
 
 
@@ -549,7 +588,7 @@ def interactive_menu() -> None:
 COMMANDS = {
     "add": cmd_add, "list": cmd_list, "show": cmd_show, "edit": cmd_edit, "pause": cmd_pause,
     "resume": cmd_resume, "delete": cmd_delete, "send": cmd_send, "test": cmd_test, "me": cmd_me,
-    "history": cmd_history, "bot": cmd_bot,
+    "history": cmd_history, "reviews": cmd_reviews, "review-channel": cmd_review_channel, "bot": cmd_bot,
 }
 
 
@@ -566,7 +605,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                             ("test", "manda só no seu privado, para testar")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("id", type=int, nargs="?", help="ID do lembrete (se omitido, pergunta)")
-    sub.add_parser("me", help="define/troca seu usuário do Discord (recebe testes e cópia de todo envio)")
+    sub.add_parser("me", help="define/troca seu usuário do Discord (recebe testes, cópias e code reviews)")
+    r = sub.add_parser("reviews", help="lista os code reviews em aberto")
+    r.add_argument("--all", action="store_true", help="inclui aprovados, revisados e cancelados")
+    sub.add_parser("review-channel", help="define em qual canal o /code-review pode ser usado")
     h = sub.add_parser("history", help="histórico de envios")
     h.add_argument("id", type=int, nargs="?")
     h.add_argument("-n", type=int, default=20, help="quantidade de registros")
